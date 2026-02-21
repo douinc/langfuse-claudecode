@@ -41,7 +41,7 @@ fi
 if [ ! -d ".git" ] && [ ! -d ".claude" ]; then
     warn "Warning: not in a git repository root."
     echo "Run this installer from your project root directory."
-    read -rp "Continue anyway? [y/N] " confirm
+    read -rp "Continue anyway? [y/N] " confirm < /dev/tty
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         exit 1
     fi
@@ -109,7 +109,7 @@ echo ""
 
 # Support non-interactive mode: skip prompts for pre-set env vars
 if [ -z "${LANGFUSE_PUBLIC_KEY:-}" ]; then
-    read -rp "  LANGFUSE_PUBLIC_KEY (pk-lf-...): " LANGFUSE_PUBLIC_KEY
+    read -rp "  LANGFUSE_PUBLIC_KEY (pk-lf-...): " LANGFUSE_PUBLIC_KEY < /dev/tty
 fi
 if [ -z "${LANGFUSE_PUBLIC_KEY:-}" ]; then
     err "Error: LANGFUSE_PUBLIC_KEY is required."
@@ -117,7 +117,7 @@ if [ -z "${LANGFUSE_PUBLIC_KEY:-}" ]; then
 fi
 
 if [ -z "${LANGFUSE_SECRET_KEY:-}" ]; then
-    read -rp "  LANGFUSE_SECRET_KEY (sk-lf-...): " LANGFUSE_SECRET_KEY
+    read -rp "  LANGFUSE_SECRET_KEY (sk-lf-...): " LANGFUSE_SECRET_KEY < /dev/tty
 fi
 if [ -z "${LANGFUSE_SECRET_KEY:-}" ]; then
     err "Error: LANGFUSE_SECRET_KEY is required."
@@ -125,16 +125,16 @@ if [ -z "${LANGFUSE_SECRET_KEY:-}" ]; then
 fi
 
 if [ -z "${LANGFUSE_BASE_URL:-}" ]; then
-    read -rp "  LANGFUSE_BASE_URL [https://cloud.langfuse.com]: " LANGFUSE_BASE_URL
+    read -rp "  LANGFUSE_BASE_URL [https://cloud.langfuse.com]: " LANGFUSE_BASE_URL < /dev/tty
 fi
 LANGFUSE_BASE_URL="${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}"
 
 if [ -z "${CC_LANGFUSE_USER_ID:-}" ]; then
-    read -rp "  CC_LANGFUSE_USER_ID (e.g. your email, optional): " CC_LANGFUSE_USER_ID
+    read -rp "  CC_LANGFUSE_USER_ID (e.g. your email, optional): " CC_LANGFUSE_USER_ID < /dev/tty
 fi
 
 if [ -z "${CC_LANGFUSE_ENVIRONMENT:-}" ]; then
-    read -rp "  CC_LANGFUSE_ENVIRONMENT (e.g. project name, optional): " CC_LANGFUSE_ENVIRONMENT
+    read -rp "  CC_LANGFUSE_ENVIRONMENT (e.g. project name, optional): " CC_LANGFUSE_ENVIRONMENT < /dev/tty
 fi
 
 # ── Merge .claude/settings.local.json ─────────────────────────────────
