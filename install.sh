@@ -7,7 +7,7 @@ HOOK_PATH="${HOOK_DIR}/langfuse_hook.py"
 SETTINGS_FILE=".claude/settings.json"
 SETTINGS_LOCAL_FILE=".claude/settings.local.json"
 GITIGNORE_FILE=".gitignore"
-HOOK_COMMAND="uv run .claude/hooks/langfuse_hook.py"
+HOOK_COMMAND="uv run --python 3.13 .claude/hooks/langfuse_hook.py"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -64,7 +64,7 @@ ok "  -> ${HOOK_PATH}"
 
 info "Configuring ${SETTINGS_FILE} ..."
 
-uv run --no-project --python 3.12 - "${SETTINGS_FILE}" "${HOOK_COMMAND}" << 'PYEOF'
+uv run --no-project --python 3.13 - "${SETTINGS_FILE}" "${HOOK_COMMAND}" << 'PYEOF'
 import json, sys, os
 
 file_path = sys.argv[1]
@@ -146,7 +146,7 @@ _INSTALL_ENVIRONMENT="${CC_LANGFUSE_ENVIRONMENT:-}" \
 _INSTALL_PUBLIC_KEY="${LANGFUSE_PUBLIC_KEY}" \
 _INSTALL_SECRET_KEY="${LANGFUSE_SECRET_KEY}" \
 _INSTALL_BASE_URL="${LANGFUSE_BASE_URL}" \
-uv run --no-project --python 3.12 - "${SETTINGS_LOCAL_FILE}" << 'PYEOF'
+uv run --no-project --python 3.13 - "${SETTINGS_LOCAL_FILE}" << 'PYEOF'
 import json, sys, os
 
 file_path = sys.argv[1]
