@@ -31,6 +31,8 @@ The installer will:
 
 Pre-set environment variables to skip prompts:
 
+The `CC_LANGFUSE_ENVIRONMENT` should not start with `langfuse`.
+
 ```bash
 LANGFUSE_PUBLIC_KEY=pk-lf-... \
 LANGFUSE_SECRET_KEY=sk-lf-... \

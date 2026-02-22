@@ -1,17 +1,85 @@
 #!/usr/bin/env uv run
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#     "langfuse>=3.14.4",
-# ]
-# ///
 """
 Claude Code -> Langfuse hook
 
+Sends Claude Code conversation turns to Langfuse as traces with spans,
+generations, and tool observations. Runs on the "Stop" hook (after each
+assistant turn) and reads the JSONL transcript incrementally.
+
+Setup
+=====
+
+1. Register the hook in .claude/settings.json (committed to repo):
+
+    {
+      "hooks": {
+        "Stop": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "uv run --project /path/to/project .claude/hooks/langfuse_hook.py"
+              }
+            ]
+          }
+        ]
+      }
+    }
+
+2. Add credentials and config in .claude/settings.local.json (gitignored):
+
+    {
+      "env": {
+        "TRACE_TO_LANGFUSE": "true",
+        "LANGFUSE_PUBLIC_KEY": "pk-lf-...",
+        "LANGFUSE_SECRET_KEY": "sk-lf-...",
+        "LANGFUSE_BASE_URL": "https://cloud.langfuse.com",
+        "CC_LANGFUSE_USER_ID": "user@example.com",
+        "CC_LANGFUSE_ENVIRONMENT": "my-project"
+      }
+    }
+
+Environment variables
+=====================
+
+Required (in settings.local.json env):
+  TRACE_TO_LANGFUSE       Set to "true" to enable tracing.
+  LANGFUSE_PUBLIC_KEY     Langfuse project public key.
+  LANGFUSE_SECRET_KEY     Langfuse project secret key.
+
+Optional:
+  LANGFUSE_BASE_URL       Langfuse host (default: https://cloud.langfuse.com).
+  CC_LANGFUSE_USER_ID     User ID attached to all traces (e.g. email).
+  CC_LANGFUSE_ENVIRONMENT Environment name for Langfuse (e.g. project name).
+                          Must match: ^(?!langfuse)[a-z0-9-_]+$ (max 40 chars).
+  CC_LANGFUSE_DEBUG       Set to "true" for verbose logging.
+  CC_LANGFUSE_MAX_CHARS   Max characters before truncation (default: 20000).
+
+Trace metadata
+==============
+
+Each trace/span includes the following metadata keys:
+
+  source              Always "claude-code".
+  session_id          Claude Code session UUID.
+  turn_number         Sequential turn number within the session.
+  transcript_path     Local path to the JSONL transcript file.
+  user_text           Truncation info for the user message.
+  host_ip             Public IP of the machine (via api.ipify.org).
+  host_name           OS hostname of the machine.
+  host_cwd            Working directory where Claude Code was invoked.
+
+Notes
+=====
+- settings.json is committed and shared; settings.local.json holds secrets
+  and per-user config and should be gitignored.
+- The hook fails open: if Langfuse is unreachable or misconfigured, Claude
+  Code continues normally.
 """
 
 import json
 import os
+import socket
 import sys
 import time
 import hashlib
@@ -35,6 +103,7 @@ LOCK_FILE = STATE_DIR / "langfuse_state.lock"
 DEBUG = os.environ.get("CC_LANGFUSE_DEBUG", "").lower() == "true"
 MAX_CHARS = int(os.environ.get("CC_LANGFUSE_MAX_CHARS", "20000"))
 
+
 # ----------------- Logging -----------------
 def _log(level: str, message: str) -> None:
     try:
@@ -46,18 +115,23 @@ def _log(level: str, message: str) -> None:
         # Never block
         pass
 
+
 def debug(msg: str) -> None:
     if DEBUG:
         _log("DEBUG", msg)
 
+
 def info(msg: str) -> None:
     _log("INFO", msg)
+
 
 def warn(msg: str) -> None:
     _log("WARN", msg)
 
+
 def error(msg: str) -> None:
     _log("ERROR", msg)
+
 
 # ----------------- State locking (best-effort) -----------------
 class FileLock:
@@ -71,6 +145,7 @@ class FileLock:
         self._fh = open(self.path, "a+", encoding="utf-8")
         try:
             import fcntl  # Unix only
+
             deadline = time.time() + self.timeout_s
             while True:
                 try:
@@ -88,6 +163,7 @@ class FileLock:
     def __exit__(self, exc_type, exc, tb):
         try:
             import fcntl
+
             fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
         except Exception:
             pass
@@ -96,6 +172,7 @@ class FileLock:
         except Exception:
             pass
 
+
 def load_state() -> Dict[str, Any]:
     try:
         if not STATE_FILE.exists():
@@ -103,6 +180,7 @@ def load_state() -> Dict[str, Any]:
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
 
 def save_state(state: Dict[str, Any]) -> None:
     try:
@@ -113,10 +191,12 @@ def save_state(state: Dict[str, Any]) -> None:
     except Exception as e:
         debug(f"save_state failed: {e}")
 
+
 def state_key(session_id: str, transcript_path: str) -> str:
     # stable key even if session_id collides
     raw = f"{session_id}::{transcript_path}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
 
 # ----------------- Hook payload -----------------
 def read_hook_payload() -> Dict[str, Any]:
@@ -132,7 +212,10 @@ def read_hook_payload() -> Dict[str, Any]:
     except Exception:
         return {}
 
-def extract_session_and_transcript(payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[Path]]:
+
+def extract_session_and_transcript(
+    payload: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[Path]]:
     """
     Tries a few plausible field names; exact keys can vary across hook types/versions.
     Prefer structured values from stdin over heuristics.
@@ -159,6 +242,7 @@ def extract_session_and_transcript(payload: Dict[str, Any]) -> Tuple[Optional[st
 
     return session_id, transcript_path
 
+
 # ----------------- Transcript parsing helpers -----------------
 def get_content(msg: Dict[str, Any]) -> Any:
     if not isinstance(msg, dict):
@@ -166,6 +250,7 @@ def get_content(msg: Dict[str, Any]) -> Any:
     if "message" in msg and isinstance(msg.get("message"), dict):
         return msg["message"].get("content")
     return msg.get("content")
+
 
 def get_role(msg: Dict[str, Any]) -> Optional[str]:
     # Claude Code transcript lines commonly have type=user/assistant OR message.role
@@ -179,14 +264,18 @@ def get_role(msg: Dict[str, Any]) -> Optional[str]:
             return r
     return None
 
+
 def is_tool_result(msg: Dict[str, Any]) -> bool:
     role = get_role(msg)
     if role != "user":
         return False
     content = get_content(msg)
     if isinstance(content, list):
-        return any(isinstance(x, dict) and x.get("type") == "tool_result" for x in content)
+        return any(
+            isinstance(x, dict) and x.get("type") == "tool_result" for x in content
+        )
     return False
+
 
 def iter_tool_results(content: Any) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
@@ -196,6 +285,7 @@ def iter_tool_results(content: Any) -> List[Dict[str, Any]]:
                 out.append(x)
     return out
 
+
 def iter_tool_uses(content: Any) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     if isinstance(content, list):
@@ -203,6 +293,7 @@ def iter_tool_uses(content: Any) -> List[Dict[str, Any]]:
             if isinstance(x, dict) and x.get("type") == "tool_use":
                 out.append(x)
     return out
+
 
 def extract_text(content: Any) -> str:
     if isinstance(content, str):
@@ -217,6 +308,7 @@ def extract_text(content: Any) -> str:
         return "\n".join([p for p in parts if p])
     return ""
 
+
 def truncate_text(s: str, max_chars: int = MAX_CHARS) -> Tuple[str, Dict[str, Any]]:
     if s is None:
         return "", {"truncated": False, "orig_len": 0}
@@ -224,13 +316,20 @@ def truncate_text(s: str, max_chars: int = MAX_CHARS) -> Tuple[str, Dict[str, An
     if orig_len <= max_chars:
         return s, {"truncated": False, "orig_len": orig_len}
     head = s[:max_chars]
-    return head, {"truncated": True, "orig_len": orig_len, "kept_len": len(head), "sha256": hashlib.sha256(s.encode("utf-8")).hexdigest()}
+    return head, {
+        "truncated": True,
+        "orig_len": orig_len,
+        "kept_len": len(head),
+        "sha256": hashlib.sha256(s.encode("utf-8")).hexdigest(),
+    }
+
 
 def get_model(msg: Dict[str, Any]) -> str:
     m = msg.get("message")
     if isinstance(m, dict):
         return m.get("model") or "claude"
     return "claude"
+
 
 def get_message_id(msg: Dict[str, Any]) -> Optional[str]:
     m = msg.get("message")
@@ -240,12 +339,14 @@ def get_message_id(msg: Dict[str, Any]) -> Optional[str]:
             return mid
     return None
 
+
 # ----------------- Incremental reader -----------------
 @dataclass
 class SessionState:
     offset: int = 0
     buffer: str = ""
     turn_count: int = 0
+
 
 def load_session_state(global_state: Dict[str, Any], key: str) -> SessionState:
     s = global_state.get(key, {})
@@ -255,7 +356,10 @@ def load_session_state(global_state: Dict[str, Any], key: str) -> SessionState:
         turn_count=int(s.get("turn_count", 0)),
     )
 
-def write_session_state(global_state: Dict[str, Any], key: str, ss: SessionState) -> None:
+
+def write_session_state(
+    global_state: Dict[str, Any], key: str, ss: SessionState
+) -> None:
     global_state[key] = {
         "offset": ss.offset,
         "buffer": ss.buffer,
@@ -263,7 +367,10 @@ def write_session_state(global_state: Dict[str, Any], key: str, ss: SessionState
         "updated": datetime.now(timezone.utc).isoformat(),
     }
 
-def read_new_jsonl(transcript_path: Path, ss: SessionState) -> Tuple[List[Dict[str, Any]], SessionState]:
+
+def read_new_jsonl(
+    transcript_path: Path, ss: SessionState
+) -> Tuple[List[Dict[str, Any]], SessionState]:
     """
     Reads only new bytes since ss.offset. Keeps ss.buffer for partial last line.
     Returns parsed JSON lines (best-effort) and updated state.
@@ -306,12 +413,14 @@ def read_new_jsonl(transcript_path: Path, ss: SessionState) -> Tuple[List[Dict[s
 
     return msgs, ss
 
+
 # ----------------- Turn assembly -----------------
 @dataclass
 class Turn:
     user_msg: Dict[str, Any]
     assistant_msgs: List[Dict[str, Any]]
     tool_results_by_id: Dict[str, Any]
+
 
 def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
     """
@@ -325,19 +434,34 @@ def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
     current_user: Optional[Dict[str, Any]] = None
 
     # assistant messages for current turn:
-    assistant_order: List[str] = []             # message ids in order of first appearance (or synthetic)
+    assistant_order: List[
+        str
+    ] = []  # message ids in order of first appearance (or synthetic)
     assistant_latest: Dict[str, Dict[str, Any]] = {}  # id -> latest msg
 
-    tool_results_by_id: Dict[str, Any] = {}     # tool_use_id -> content
+    tool_results_by_id: Dict[str, Any] = {}  # tool_use_id -> content
 
     def flush_turn():
-        nonlocal current_user, assistant_order, assistant_latest, tool_results_by_id, turns
+        nonlocal \
+            current_user, \
+            assistant_order, \
+            assistant_latest, \
+            tool_results_by_id, \
+            turns
         if current_user is None:
             return
         if not assistant_latest:
             return
-        assistants = [assistant_latest[mid] for mid in assistant_order if mid in assistant_latest]
-        turns.append(Turn(user_msg=current_user, assistant_msgs=assistants, tool_results_by_id=dict(tool_results_by_id)))
+        assistants = [
+            assistant_latest[mid] for mid in assistant_order if mid in assistant_latest
+        ]
+        turns.append(
+            Turn(
+                user_msg=current_user,
+                assistant_msgs=assistants,
+                tool_results_by_id=dict(tool_results_by_id),
+            )
+        )
 
     for msg in messages:
         role = get_role(msg)
@@ -378,20 +502,35 @@ def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
     flush_turn()
     return turns
 
+
 # ----------------- Langfuse emit -----------------
-def _tool_calls_from_assistants(assistant_msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _tool_calls_from_assistants(
+    assistant_msgs: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     calls: List[Dict[str, Any]] = []
     for am in assistant_msgs:
         for tu in iter_tool_uses(get_content(am)):
             tid = tu.get("id") or ""
-            calls.append({
-                "id": str(tid),
-                "name": tu.get("name") or "unknown",
-                "input": tu.get("input") if isinstance(tu.get("input"), (dict, list, str, int, float, bool)) else {},
-            })
+            calls.append(
+                {
+                    "id": str(tid),
+                    "name": tu.get("name") or "unknown",
+                    "input": tu.get("input")
+                    if isinstance(tu.get("input"), (dict, list, str, int, float, bool))
+                    else {},
+                }
+            )
     return calls
 
-def emit_turn(langfuse: Langfuse, session_id: str, turn_num: int, turn: Turn, transcript_path: Path) -> None:
+
+def emit_turn(
+    langfuse: Langfuse,
+    session_id: str,
+    turn_num: int,
+    turn: Turn,
+    transcript_path: Path,
+    host_meta: Optional[Dict[str, str]] = None,
+) -> None:
     user_text_raw = extract_text(get_content(turn.user_msg))
     user_text, user_text_meta = truncate_text(user_text_raw)
 
@@ -407,17 +546,25 @@ def emit_turn(langfuse: Langfuse, session_id: str, turn_num: int, turn: Turn, tr
     for c in tool_calls:
         if c["id"] and c["id"] in turn.tool_results_by_id:
             out_raw = turn.tool_results_by_id[c["id"]]
-            out_str = out_raw if isinstance(out_raw, str) else json.dumps(out_raw, ensure_ascii=False)
+            out_str = (
+                out_raw
+                if isinstance(out_raw, str)
+                else json.dumps(out_raw, ensure_ascii=False)
+            )
             out_trunc, out_meta = truncate_text(out_str)
             c["output"] = out_trunc
             c["output_meta"] = out_meta
         else:
             c["output"] = None
 
+    user_id = os.environ.get("CC_LANGFUSE_USER_ID")
+
     with propagate_attributes(
         session_id=session_id,
+        user_id=user_id,
         trace_name=f"Claude Code - Turn {turn_num}",
         tags=["claude-code"],
+        metadata=host_meta or None,
     ):
         with langfuse.start_as_current_span(
             name=f"Claude Code - Turn {turn_num}",
@@ -428,6 +575,7 @@ def emit_turn(langfuse: Langfuse, session_id: str, turn_num: int, turn: Turn, tr
                 "turn_number": turn_num,
                 "transcript_path": str(transcript_path),
                 "user_text": user_text_meta,
+                **(host_meta or {}),
             },
         ) as trace_span:
             # LLM generation
@@ -468,6 +616,7 @@ def emit_turn(langfuse: Langfuse, session_id: str, turn_num: int, turn: Turn, tr
 
             trace_span.update(output={"role": "assistant", "content": assistant_text})
 
+
 # ----------------- Main -----------------
 def main() -> int:
     start = time.time()
@@ -476,12 +625,43 @@ def main() -> int:
     if os.environ.get("TRACE_TO_LANGFUSE", "").lower() != "true":
         return 0
 
-    public_key = os.environ.get("CC_LANGFUSE_PUBLIC_KEY") or os.environ.get("LANGFUSE_PUBLIC_KEY")
-    secret_key = os.environ.get("CC_LANGFUSE_SECRET_KEY") or os.environ.get("LANGFUSE_SECRET_KEY")
-    host = os.environ.get("CC_LANGFUSE_BASE_URL") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
+    public_key = os.environ.get("CC_LANGFUSE_PUBLIC_KEY") or os.environ.get(
+        "LANGFUSE_PUBLIC_KEY"
+    )
+    secret_key = os.environ.get("CC_LANGFUSE_SECRET_KEY") or os.environ.get(
+        "LANGFUSE_SECRET_KEY"
+    )
+    host = (
+        os.environ.get("CC_LANGFUSE_BASE_URL")
+        or os.environ.get("LANGFUSE_BASE_URL")
+        or "https://cloud.langfuse.com"
+    )
 
     if not public_key or not secret_key:
         return 0
+
+    # Set environment for Langfuse tracing (must be set before client init)
+    environment = os.environ.get("CC_LANGFUSE_ENVIRONMENT")
+    if environment:
+        os.environ.setdefault("LANGFUSE_TRACING_ENVIRONMENT", environment)
+
+    # Build host identifier for metadata
+    try:
+        import urllib.request
+
+        public_ip = (
+            urllib.request.urlopen("https://api.ipify.org", timeout=2)
+            .read()
+            .decode()
+            .strip()
+        )
+    except Exception:
+        public_ip = "unknown"
+    host_meta = {
+        "host_ip": public_ip,
+        "host_name": socket.gethostname(),
+        "host_cwd": os.getcwd(),
+    }
 
     payload = read_hook_payload()
     session_id, transcript_path = extract_session_and_transcript(payload)
@@ -496,7 +676,12 @@ def main() -> int:
         return 0
 
     try:
-        langfuse = Langfuse(public_key=public_key, secret_key=secret_key, host=host)
+        langfuse = Langfuse(
+            public_key=public_key,
+            secret_key=secret_key,
+            host=host,
+            environment=environment,
+        )
     except Exception:
         return 0
 
@@ -524,9 +709,12 @@ def main() -> int:
                 emitted += 1
                 turn_num = ss.turn_count + emitted
                 try:
-                    emit_turn(langfuse, session_id, turn_num, t, transcript_path)
+                    emit_turn(
+                        langfuse, session_id, turn_num, t, transcript_path, host_meta
+                    )
                 except Exception as e:
-                    error(f"emit_turn failed for turn {turn_num}: {e}")
+                    debug(f"emit_turn failed: {e}")
+                    # continue emitting other turns
 
             ss.turn_count += emitted
             write_session_state(state, key, ss)
@@ -534,15 +722,15 @@ def main() -> int:
 
         try:
             langfuse.flush()
-        except Exception as e:
-            error(f"langfuse.flush() failed: {e}")
+        except Exception:
+            pass
 
         dur = time.time() - start
         info(f"Processed {emitted} turns in {dur:.2f}s (session={session_id})")
         return 0
 
     except Exception as e:
-        error(f"Unexpected failure: {e}")
+        debug(f"Unexpected failure: {e}")
         return 0
 
     finally:
@@ -550,6 +738,7 @@ def main() -> int:
             langfuse.shutdown()
         except Exception:
             pass
+
 
 if __name__ == "__main__":
     sys.exit(main())
