@@ -2,6 +2,8 @@
 
 Langfuse tracing hook for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Automatically sends conversation traces to [Langfuse](https://langfuse.com) for observability.
 
+[Link to the official Langfuse docs for Claude Code integration](https://langfuse.com/integrations/other/claude-code)
+
 ## What it does
 
 This hook runs after every Claude Code assistant turn and:
@@ -43,6 +45,8 @@ The `--setup` flag skips the global hook installation and only prompts for proje
 Pre-set environment variables to skip prompts:
 
 The `CC_LANGFUSE_ENVIRONMENT` should not start with `langfuse`.
+
+Check more from [the official Langfuse docs](https://langfuse.com/docs/observability/features/environments)
 
 ```bash
 LANGFUSE_PUBLIC_KEY=pk-lf-... \
