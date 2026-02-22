@@ -22,10 +22,21 @@ Run from your **project root** (where `.claude/` lives or will be created).
 The installer will:
 
 1. Check that `uv` is installed
-2. Download the hook to `.claude/hooks/langfuse_hook.py`
-3. Register the Stop hook in `.claude/settings.json`
-4. Prompt for your Langfuse credentials
-5. Save credentials in `.claude/settings.local.json` (gitignored)
+2. Download the hook to `~/.claude/hooks/langfuse-claudecode/` (global, shared across projects)
+3. Install dependencies into an isolated `.venv` inside that directory
+4. Register the Stop hook in `~/.claude/settings.json` (user-wide)
+5. Prompt for your Langfuse credentials
+6. Save credentials in `.claude/settings.local.json` (per-project, gitignored)
+
+### Per-project setup
+
+Once the hook is installed globally, add tracing to additional projects with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/install.sh | bash -s -- --setup
+```
+
+The `--setup` flag skips the global hook installation and only prompts for project-level credentials.
 
 ### Non-interactive install
 
@@ -53,15 +64,20 @@ CC_LANGFUSE_ENVIRONMENT=my-project \
 ### 1. Download the hook
 
 ```bash
-mkdir -p .claude/hooks
+mkdir -p ~/.claude/hooks/langfuse-claudecode
 curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/langfuse_hook.py \
-  > .claude/hooks/langfuse_hook.py
-chmod +x .claude/hooks/langfuse_hook.py
+  > ~/.claude/hooks/langfuse-claudecode/langfuse_hook.py
+curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/pyproject.toml \
+  > ~/.claude/hooks/langfuse-claudecode/pyproject.toml
+curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/uv.lock \
+  > ~/.claude/hooks/langfuse-claudecode/uv.lock
+chmod +x ~/.claude/hooks/langfuse-claudecode/langfuse_hook.py
+uv sync --project ~/.claude/hooks/langfuse-claudecode/ --python 3.13
 ```
 
 ### 2. Register the hook
 
-Add to `.claude/settings.json` (create if it doesn't exist):
+Add to `~/.claude/settings.json` (create if it doesn't exist):
 
 ```json
 {
@@ -71,7 +87,7 @@ Add to `.claude/settings.json` (create if it doesn't exist):
         "hooks": [
           {
             "type": "command",
-            "command": "uv run .claude/hooks/langfuse_hook.py"
+            "command": "uv run --project ~/.claude/hooks/langfuse-claudecode/ ~/.claude/hooks/langfuse-claudecode/langfuse_hook.py"
           }
         ]
       }
@@ -82,7 +98,7 @@ Add to `.claude/settings.json` (create if it doesn't exist):
 
 ### 3. Configure credentials
 
-Create `.claude/settings.local.json`:
+Create `.claude/settings.local.json` in your project root:
 
 ```json
 {
@@ -147,7 +163,9 @@ Each Claude Code turn produces a trace with:
 
 ## How it works
 
-The hook uses [PEP 723 inline script metadata](https://peps.python.org/pep-0723/) so it is fully self-contained -- no project `pyproject.toml` needed. When `uv run` executes the hook, it reads the dependency declaration from the script itself, creates an isolated cached environment, installs `langfuse`, and runs the script.
+The hook is installed globally in `~/.claude/hooks/langfuse-claudecode/` with its own `pyproject.toml` and pre-synced `.venv`. This isolates langfuse's dependencies from your project's Python environment, preventing dependency conflicts.
+
+When Claude Code triggers the Stop hook, it runs `uv run --project ~/.claude/hooks/langfuse-claudecode/ langfuse_hook.py`, which uses the isolated environment regardless of your project's Python setup.
 
 State is persisted in `~/.claude/state/` to support incremental transcript reading across turns within a session.
 
@@ -158,7 +176,8 @@ State is persisted in `~/.claude/state/` to support incremental transcript readi
 | No traces appearing | Check `TRACE_TO_LANGFUSE` is `"true"` and keys are correct |
 | Hook errors | `tail -f ~/.claude/state/langfuse_hook.log` |
 | Need more detail | Set `CC_LANGFUSE_DEBUG` to `"true"` in settings.local.json |
-| Test hook manually | `echo '{}' \| uv run .claude/hooks/langfuse_hook.py` |
+| Test hook manually | `echo '{}' \| uv run --project ~/.claude/hooks/langfuse-claudecode/ ~/.claude/hooks/langfuse-claudecode/langfuse_hook.py` |
+| Dependency conflicts | The global install isolates dependencies; if issues persist, re-run the installer |
 
 ## License
 
