@@ -58,6 +58,16 @@ CC_LANGFUSE_ENVIRONMENT=my-project \
   curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/install.sh | bash
 ```
 
+## Updating
+
+Re-run the install command to update to the latest version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/install.sh | bash
+```
+
+This will overwrite the hook script in `~/.claude/hooks/langfuse-claudecode/` with the latest version. Your project-level credentials in `.claude/settings.local.json` are preserved.
+
 ## Prerequisites
 
 - [jq](https://jqlang.github.io/jq/) -- JSON processor
