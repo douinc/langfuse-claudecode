@@ -291,7 +291,24 @@ fi
 
 # ── Interactive credential prompts (skip if --setup with no project) ──
 
+# Check if credentials already exist
+CREDS_EXIST=false
+if [ -f "${SETTINGS_LOCAL_FILE}" ]; then
+    EXISTING_PK=$(jq -r '.env.LANGFUSE_PUBLIC_KEY // ""' "${SETTINGS_LOCAL_FILE}" 2>/dev/null || echo "")
+    EXISTING_SK=$(jq -r '.env.LANGFUSE_SECRET_KEY // ""' "${SETTINGS_LOCAL_FILE}" 2>/dev/null || echo "")
+    if [ -n "$EXISTING_PK" ] && [ -n "$EXISTING_SK" ]; then
+        CREDS_EXIST=true
+    fi
+fi
+
 if [ "$SETUP_ONLY" = true ] || [ "$IN_PROJECT" = true ]; then
+
+    # Skip credential prompts if already configured (unless --setup forces reconfiguration)
+    if [ "$CREDS_EXIST" = true ] && [ "$SETUP_ONLY" = false ]; then
+        echo ""
+        ok "Credentials already configured in ${SETTINGS_LOCAL_FILE} (skipping)"
+    else
+
     echo ""
     info "Configure Langfuse credentials"
     echo "  (stored in ${SETTINGS_LOCAL_FILE}, which will be gitignored)"
@@ -379,6 +396,8 @@ if [ "$SETUP_ONLY" = true ] || [ "$IN_PROJECT" = true ]; then
     else
         ok "  -> ${GITIGNORE_FILE} already up to date"
     fi
+
+    fi # end of credential prompts (skipped when CREDS_EXIST=true)
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────

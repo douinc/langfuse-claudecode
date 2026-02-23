@@ -562,8 +562,7 @@ build_turn_events() {
                 tags: ["claude-code"],
                 metadata: $host_meta
             }
-            | if $environment != "" then .environment = $environment else . end
-        }')
+        } | if ($environment | length) > 0 then .body.environment = $environment else . end')
 
     # Build span event
     local span_metadata
