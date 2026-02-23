@@ -1,8 +1,10 @@
 # langfuse-claudecode
 
-Langfuse tracing hook for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Automatically sends conversation traces to [Langfuse](https://langfuse.com) for observability.
+A pure shell script-based Langfuse tracing hook for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Automatically sends conversation traces to [Langfuse](https://langfuse.com) for observability.
 
 [Link to the official Langfuse docs for Claude Code integration](https://langfuse.com/integrations/other/claude-code)
+
+No need to install or manage Python environments.
 
 ## What it does
 
@@ -23,12 +25,11 @@ Run from your **project root** (where `.claude/` lives or will be created).
 
 The installer will:
 
-1. Check that `uv` is installed
-2. Download the hook to `~/.claude/hooks/langfuse-claudecode/` (global, shared across projects)
-3. Install dependencies into an isolated `.venv` inside that directory
-4. Register the Stop hook in `~/.claude/settings.json` (user-wide)
-5. Prompt for your Langfuse credentials
-6. Save credentials in `.claude/settings.local.json` (per-project, gitignored)
+1. Check that `jq` and `curl` are installed
+2. Download the hook script to `~/.claude/hooks/langfuse-claudecode/` (global, shared across projects)
+3. Register the Stop hook in `~/.claude/settings.json` (user-wide)
+4. Prompt for your Langfuse credentials
+5. Save credentials in `.claude/settings.local.json` (per-project, gitignored)
 
 ### Per-project setup
 
@@ -59,7 +60,8 @@ CC_LANGFUSE_ENVIRONMENT=my-project \
 
 ## Prerequisites
 
-- [uv](https://docs.astral.sh/uv/) -- the Python package manager
+- [jq](https://jqlang.github.io/jq/) -- JSON processor
+- `curl` -- for HTTP requests (usually pre-installed)
 - A [Langfuse](https://langfuse.com) account (cloud or self-hosted)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 
@@ -69,14 +71,9 @@ CC_LANGFUSE_ENVIRONMENT=my-project \
 
 ```bash
 mkdir -p ~/.claude/hooks/langfuse-claudecode
-curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/langfuse_hook.py \
-  > ~/.claude/hooks/langfuse-claudecode/langfuse_hook.py
-curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/pyproject.toml \
-  > ~/.claude/hooks/langfuse-claudecode/pyproject.toml
-curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/uv.lock \
-  > ~/.claude/hooks/langfuse-claudecode/uv.lock
-chmod +x ~/.claude/hooks/langfuse-claudecode/langfuse_hook.py
-uv sync --project ~/.claude/hooks/langfuse-claudecode/ --python 3.13
+curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/langfuse_hook.sh \
+  > ~/.claude/hooks/langfuse-claudecode/langfuse_hook.sh
+chmod +x ~/.claude/hooks/langfuse-claudecode/langfuse_hook.sh
 ```
 
 ### 2. Register the hook
@@ -91,7 +88,7 @@ Add to `~/.claude/settings.json` (create if it doesn't exist):
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project ~/.claude/hooks/langfuse-claudecode/ ~/.claude/hooks/langfuse-claudecode/langfuse_hook.py"
+            "command": "~/.claude/hooks/langfuse-claudecode/langfuse_hook.sh"
           }
         ]
       }
@@ -167,11 +164,16 @@ Each Claude Code turn produces a trace with:
 
 ## How it works
 
-The hook is installed globally in `~/.claude/hooks/langfuse-claudecode/` with its own `pyproject.toml` and pre-synced `.venv`. This isolates langfuse's dependencies from your project's Python environment, preventing dependency conflicts.
+The hook is installed globally in `~/.claude/hooks/langfuse-claudecode/` as a standalone shell script with no dependencies other than `jq` and `curl`.
 
-When Claude Code triggers the Stop hook, it runs `uv run --project ~/.claude/hooks/langfuse-claudecode/ langfuse_hook.py`, which uses the isolated environment regardless of your project's Python setup.
+When Claude Code triggers the Stop hook, it runs `~/.claude/hooks/langfuse-claudecode/langfuse_hook.sh`, which:
 
-State is persisted in `~/.claude/state/` to support incremental transcript reading across turns within a session.
+1. Reads the JSONL transcript incrementally from the last known position
+2. Parses conversation turns (user → assistant → tools)
+3. Builds Langfuse event batches using `jq`
+4. Sends them to Langfuse via `curl` with Basic Auth
+
+State is persisted in `~/.claude/state/langfuse_state.json` to support incremental transcript reading across turns within a session.
 
 ## Troubleshooting
 
@@ -180,8 +182,8 @@ State is persisted in `~/.claude/state/` to support incremental transcript readi
 | No traces appearing | Check `TRACE_TO_LANGFUSE` is `"true"` and keys are correct |
 | Hook errors | `tail -f ~/.claude/state/langfuse_hook.log` |
 | Need more detail | Set `CC_LANGFUSE_DEBUG` to `"true"` in settings.local.json |
-| Test hook manually | `echo '{}' \| uv run --project ~/.claude/hooks/langfuse-claudecode/ ~/.claude/hooks/langfuse-claudecode/langfuse_hook.py` |
-| Dependency conflicts | The global install isolates dependencies; if issues persist, re-run the installer |
+| Test hook manually | `echo '{}' \| ~/.claude/hooks/langfuse-claudecode/langfuse_hook.sh` |
+| `jq` not found | Install jq: `brew install jq` (macOS) or `apt-get install jq` (Ubuntu) |
 
 ## License
 
