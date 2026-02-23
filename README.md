@@ -1,8 +1,10 @@
 # langfuse-claudecode
 
-Langfuse tracing hook for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Automatically sends conversation traces to [Langfuse](https://langfuse.com) for observability.
+A pure shell script-based Langfuse tracing hook for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Automatically sends conversation traces to [Langfuse](https://langfuse.com) for observability.
 
 [Link to the official Langfuse docs for Claude Code integration](https://langfuse.com/integrations/other/claude-code)
+
+No need to install or manage Python environments.
 
 ## What it does
 
