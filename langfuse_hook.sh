@@ -132,17 +132,40 @@ generate_uuid() {
         uuidgen | tr '[:upper:]' '[:lower:]'
     elif [[ -r /proc/sys/kernel/random/uuid ]]; then
         cat /proc/sys/kernel/random/uuid
+    elif [[ -r /dev/urandom ]]; then
+        # Generate UUID v4 using /dev/urandom
+        local bytes
+        bytes=$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+
+        # Format as UUID v4: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+        # where y is one of [8, 9, a, b]
+        local uuid
+        uuid="${bytes:0:8}-${bytes:8:4}-4${bytes:13:3}-"
+
+        # Set variant bits (10xx for RFC 4122)
+        local variant_byte="${bytes:16:2}"
+        local variant_int=$((16#$variant_byte))
+        variant_int=$(( (variant_int & 0x3F) | 0x80 ))
+        printf -v variant_hex '%02x' $variant_int
+
+        uuid="${uuid}${variant_hex}${bytes:18:2}-${bytes:20:12}"
+        echo "$uuid"
     else
-        # Fallback: generate pseudo-UUID using /dev/urandom
-        local N B T
-        for (( N=0; N < 16; ++N )); do
+        # Last resort: generate pseudo-UUID using timestamp + RANDOM
+        # This reduces collision risk by incorporating timestamp
+        local timestamp
+        timestamp=$(date +%s%N 2>/dev/null || date +%s)
+
+        # Use timestamp for first part, RANDOM for rest
+        printf '%08x-' $(( timestamp & 0xFFFFFFFF ))
+        printf '%04x-' $(( RANDOM ))
+        printf '4%03x-' $(( RANDOM % 4096 ))
+        printf '%04x-' $(( (RANDOM & 0x3FFF) | 0x8000 ))
+
+        local N B
+        for (( N=0; N < 12; ++N )); do
             B=$(( RANDOM % 256 ))
-            case $N in
-                6) printf '4%x' $(( B % 16 )) ;;
-                8) printf '%x%x' $(( (B & 0x3F) | 0x80 )) $(( RANDOM % 16 )) ;;
-                3|5|7|9) printf '%02x-' $B ;;
-                *) printf '%02x' $B ;;
-            esac
+            printf '%02x' $B
         done
         echo
     fi
@@ -270,17 +293,35 @@ read_incremental() {
         content="${buffer}${content}"
     fi
 
-    # Split into complete lines
-    local lines
-    lines=$(echo "$content" | sed '$d' 2>/dev/null || echo "")
+    # Handle empty content case
+    if [[ -z "$content" ]]; then
+        echo "$offset"
+        echo ""
+        echo ""
+        return
+    fi
 
-    # Save incomplete last line
-    local new_buffer
-    new_buffer=$(echo "$content" | tail -n 1)
+    # Split into complete lines and incomplete last line
+    local lines=""
+    local new_buffer=""
 
-    # Check if last line is complete (ends with newline)
+    # Check if content ends with newline
     if [[ "$content" == *$'\n' ]]; then
+        # All lines are complete
+        lines="$content"
         new_buffer=""
+    else
+        # Last line is incomplete
+        # Check if there's any newline at all
+        if [[ "$content" == *$'\n'* ]]; then
+            # Has at least one newline - split at last newline
+            lines="${content%$'\n'*}"$'\n'
+            new_buffer="${content##*$'\n'}"
+        else
+            # No newline found - entire content is incomplete
+            lines=""
+            new_buffer="$content"
+        fi
     fi
 
     # Calculate new offset
@@ -289,21 +330,23 @@ read_incremental() {
 
     echo "$new_offset"
     echo "$new_buffer"
-    echo "$lines"
+    printf '%s' "$lines"
 }
 
 # --- Truncate text if needed ---
+# Returns JSON for safer parsing
 truncate_text() {
     local text="$1"
     local max_chars="${2:-$MAX_CHARS}"
 
     local len=${#text}
     if [[ $len -le $max_chars ]]; then
-        echo "$text"
-        echo "false"
-        echo "$len"
-        echo "$len"
-        echo ""
+        jq -n \
+            --arg text "$text" \
+            --argjson truncated false \
+            --argjson orig_len "$len" \
+            --argjson kept_len "$len" \
+            '{text: $text, truncated: $truncated, orig_len: $orig_len, kept_len: $kept_len, sha256: ""}'
     else
         local truncated="${text:0:$max_chars}"
         local sha
@@ -315,18 +358,20 @@ truncate_text() {
         else
             sha=$(echo -n "$text" | cksum | awk '{print $1}')
         fi
-        echo "$truncated"
-        echo "true"
-        echo "$len"
-        echo "$max_chars"
-        echo "$sha"
+        jq -n \
+            --arg text "$truncated" \
+            --argjson truncated true \
+            --argjson orig_len "$len" \
+            --argjson kept_len "$max_chars" \
+            --arg sha "$sha" \
+            '{text: $text, truncated: $truncated, orig_len: $orig_len, kept_len: $kept_len, sha256: $sha}'
     fi
 }
 
 # --- Get host metadata ---
 get_host_metadata() {
     local host_ip
-    host_ip=$(curl -s --max-time 2 https://api.ipify.org 2>/dev/null || echo "")
+    host_ip=$(curl -s --connect-timeout 2 --max-time 3 https://api.ipify.org 2>/dev/null || echo "")
 
     local host_name
     host_name=$(hostname 2>/dev/null || echo "")
@@ -355,39 +400,41 @@ parse_turns() {
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
 
+        # Parse JSON with error handling - skip malformed lines
         local msg_type
-        msg_type=$(echo "$line" | jq -r '.type // ""')
+        msg_type=$(echo "$line" | jq -r '.type // ""' 2>/dev/null || echo "")
+        [[ -z "$msg_type" ]] && continue
 
         local role
-        role=$(echo "$line" | jq -r '.message.role // ""')
+        role=$(echo "$line" | jq -r '.message.role // ""' 2>/dev/null || echo "")
 
         if [[ "$msg_type" == "user" ]] && [[ "$role" == "user" ]]; then
             # Check if this is tool_result
             local is_tool_result
-            is_tool_result=$(echo "$line" | jq '[.message.content[]? | select(.type == "tool_result")] | length > 0')
+            is_tool_result=$(echo "$line" | jq '[.message.content[]? | select(.type == "tool_result")] | length > 0' 2>/dev/null || echo "false")
 
             if [[ "$is_tool_result" == "true" ]]; then
                 # Append to current turn's tool_results
                 current_turn=$(echo "$current_turn" | jq --argjson msg "$line" \
-                    '.tool_results += [$msg]')
+                    '.tool_results += [$msg]' 2>/dev/null) || continue
             else
                 # Start new turn
                 if [[ "$in_turn" == "true" ]]; then
-                    turns=$(echo "$turns" | jq --argjson turn "$current_turn" '. += [$turn]')
+                    turns=$(echo "$turns" | jq --argjson turn "$current_turn" '. += [$turn]' 2>/dev/null) || continue
                 fi
-                current_turn=$(echo "$line" | jq '{user_message: .}')
+                current_turn=$(echo "$line" | jq '{user_message: .}' 2>/dev/null) || continue
                 in_turn=true
             fi
         elif [[ "$msg_type" == "assistant" ]] && [[ "$role" == "assistant" ]]; then
             # Append to current turn's assistant_messages
             current_turn=$(echo "$current_turn" | jq --argjson msg "$line" \
-                '.assistant_messages += [$msg]')
+                '.assistant_messages += [$msg]' 2>/dev/null) || continue
         fi
     done <<< "$lines"
 
     # Add last turn
     if [[ "$in_turn" == "true" ]]; then
-        turns=$(echo "$turns" | jq --argjson turn "$current_turn" '. += [$turn]')
+        turns=$(echo "$turns" | jq --argjson turn "$current_turn" '. += [$turn]' 2>/dev/null) || true
     fi
 
     echo "$turns"
@@ -413,9 +460,9 @@ build_turn_events() {
         timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     fi
 
-    # Extract user text
+    # Extract user text with error handling
     local user_text
-    user_text=$(echo "$turn" | jq -r '.user_message.message.content | if type == "array" then [.[] | select(.type == "text") | .text] | join("\n") elif type == "string" then . else "" end')
+    user_text=$(echo "$turn" | jq -r '.user_message.message.content | if type == "array" then [.[] | select(.type == "text") | .text] | join("\n") elif type == "string" then . else "" end' 2>/dev/null || echo "")
 
     # Extract assistant text and tools
     local assistant_text=""
@@ -423,67 +470,62 @@ build_turn_events() {
     local model=""
 
     local assistant_messages
-    assistant_messages=$(echo "$turn" | jq -c '.assistant_messages[]? // empty')
+    assistant_messages=$(echo "$turn" | jq -c '.assistant_messages[]? // empty' 2>/dev/null || echo "")
 
     while IFS= read -r assistant_msg; do
         [[ -z "$assistant_msg" ]] && continue
 
         # Extract model
         if [[ -z "$model" ]]; then
-            model=$(echo "$assistant_msg" | jq -r '.message.model // ""')
+            model=$(echo "$assistant_msg" | jq -r '.message.model // ""' 2>/dev/null || echo "")
         fi
 
         # Extract text content
         local text_blocks
-        text_blocks=$(echo "$assistant_msg" | jq -r '[.message.content[]? | select(.type == "text") | .text] | join("\n")')
+        text_blocks=$(echo "$assistant_msg" | jq -r '[.message.content[]? | select(.type == "text") | .text] | join("\n")' 2>/dev/null || echo "")
         if [[ -n "$text_blocks" ]]; then
             assistant_text="${assistant_text}${text_blocks}\n"
         fi
 
         # Extract tool uses
         local tool_uses
-        tool_uses=$(echo "$assistant_msg" | jq -c '[.message.content[]? | select(.type == "tool_use")]')
+        tool_uses=$(echo "$assistant_msg" | jq -c '[.message.content[]? | select(.type == "tool_use")]' 2>/dev/null || echo "[]")
         if [[ "$tool_uses" != "[]" ]]; then
-            tools=$(echo "$tools" | jq --argjson new "$tool_uses" '. += $new')
+            tools=$(echo "$tools" | jq --argjson new "$tool_uses" '. += $new' 2>/dev/null) || tools='[]'
         fi
     done <<< "$assistant_messages"
 
     # Process tool results
     local tool_results='[]'
     local tool_result_msgs
-    tool_result_msgs=$(echo "$turn" | jq -c '.tool_results[]? // empty')
+    tool_result_msgs=$(echo "$turn" | jq -c '.tool_results[]? // empty' 2>/dev/null || echo "")
 
     while IFS= read -r tool_result_msg; do
         [[ -z "$tool_result_msg" ]] && continue
 
         local results
-        results=$(echo "$tool_result_msg" | jq -c '[.message.content[]? | select(.type == "tool_result")]')
-        tool_results=$(echo "$tool_results" | jq --argjson new "$results" '. += $new')
+        results=$(echo "$tool_result_msg" | jq -c '[.message.content[]? | select(.type == "tool_result")]' 2>/dev/null || echo "[]")
+        tool_results=$(echo "$tool_results" | jq --argjson new "$results" '. += $new' 2>/dev/null) || tool_results='[]'
     done <<< "$tool_result_msgs"
 
     # Truncate texts
-    local user_text_truncated user_truncated user_orig_len user_kept_len user_sha
-    read -r user_text_truncated user_truncated user_orig_len user_kept_len user_sha <<< "$(truncate_text "$user_text")"
+    local user_text_result
+    user_text_result=$(truncate_text "$user_text")
 
-    local assistant_text_truncated assistant_truncated assistant_orig_len assistant_kept_len assistant_sha
-    read -r assistant_text_truncated assistant_truncated assistant_orig_len assistant_kept_len assistant_sha <<< "$(truncate_text "$assistant_text")"
+    local user_text_truncated
+    user_text_truncated=$(echo "$user_text_result" | jq -r '.text')
 
-    # Build metadata
     local user_text_meta
-    user_text_meta=$(jq -n \
-        --arg truncated "$user_truncated" \
-        --argjson orig_len "$user_orig_len" \
-        --argjson kept_len "$user_kept_len" \
-        --arg sha "$user_sha" \
-        '{truncated: ($truncated == "true"), orig_len: $orig_len, kept_len: $kept_len, sha256: $sha}')
+    user_text_meta=$(echo "$user_text_result" | jq '{truncated, orig_len, kept_len, sha256}')
+
+    local assistant_text_result
+    assistant_text_result=$(truncate_text "$assistant_text")
+
+    local assistant_text_truncated
+    assistant_text_truncated=$(echo "$assistant_text_result" | jq -r '.text')
 
     local assistant_text_meta
-    assistant_text_meta=$(jq -n \
-        --arg truncated "$assistant_truncated" \
-        --argjson orig_len "$assistant_orig_len" \
-        --argjson kept_len "$assistant_kept_len" \
-        --arg sha "$assistant_sha" \
-        '{truncated: ($truncated == "true"), orig_len: $orig_len, kept_len: $kept_len, sha256: $sha}')
+    assistant_text_meta=$(echo "$assistant_text_result" | jq '{truncated, orig_len, kept_len, sha256}')
 
     local tool_count
     tool_count=$(echo "$tools" | jq 'length')
@@ -595,56 +637,52 @@ build_turn_events() {
 
     while [[ $i -lt $tool_count_int ]]; do
         local tool
-        tool=$(echo "$tools" | jq -c ".[$i]")
+        tool=$(echo "$tools" | jq -c ".[$i]" 2>/dev/null) || { i=$((i + 1)); continue; }
 
         local tool_name
-        tool_name=$(echo "$tool" | jq -r '.name // ""')
+        tool_name=$(echo "$tool" | jq -r '.name // ""' 2>/dev/null || echo "")
 
         local tool_id
-        tool_id=$(echo "$tool" | jq -r '.id // ""')
+        tool_id=$(echo "$tool" | jq -r '.id // ""' 2>/dev/null || echo "")
 
         local tool_input
-        tool_input=$(echo "$tool" | jq -c '.input // {}')
+        tool_input=$(echo "$tool" | jq -c '.input // {}' 2>/dev/null || echo "{}")
 
         # Find matching tool result
         local tool_result
-        tool_result=$(echo "$tool_results" | jq -c --arg id "$tool_id" '.[] | select(.tool_use_id == $id) // empty' | head -n 1)
+        tool_result=$(echo "$tool_results" | jq -c --arg id "$tool_id" '.[] | select(.tool_use_id == $id) // empty' 2>/dev/null | head -n 1)
 
         local tool_output
         if [[ -n "$tool_result" ]]; then
-            tool_output=$(echo "$tool_result" | jq -c '.content // ""')
+            tool_output=$(echo "$tool_result" | jq -c '.content // ""' 2>/dev/null || echo '""')
         else
             tool_output='""'
         fi
 
         # Truncate tool input/output
         local tool_input_str
-        tool_input_str=$(echo "$tool_input" | jq -r 'tostring')
+        tool_input_str=$(echo "$tool_input" | jq -r 'tostring' 2>/dev/null || echo "")
 
         local tool_output_str
-        tool_output_str=$(echo "$tool_output" | jq -r 'if type == "string" then . else tostring end')
+        tool_output_str=$(echo "$tool_output" | jq -r 'if type == "string" then . else tostring end' 2>/dev/null || echo "")
 
-        local input_truncated input_trunc input_orig input_kept input_sha
-        read -r input_truncated input_trunc input_orig input_kept input_sha <<< "$(truncate_text "$tool_input_str")"
+        local input_result
+        input_result=$(truncate_text "$tool_input_str")
 
-        local output_truncated output_trunc output_orig output_kept output_sha
-        read -r output_truncated output_trunc output_orig output_kept output_sha <<< "$(truncate_text "$tool_output_str")"
+        local input_truncated
+        input_truncated=$(echo "$input_result" | jq -r '.text')
 
         local input_meta
-        input_meta=$(jq -n \
-            --arg truncated "$input_trunc" \
-            --argjson orig_len "$input_orig" \
-            --argjson kept_len "$input_kept" \
-            --arg sha "$input_sha" \
-            '{truncated: ($truncated == "true"), orig_len: $orig_len, kept_len: $kept_len, sha256: $sha}')
+        input_meta=$(echo "$input_result" | jq '{truncated, orig_len, kept_len, sha256}')
+
+        local output_result
+        output_result=$(truncate_text "$tool_output_str")
+
+        local output_truncated
+        output_truncated=$(echo "$output_result" | jq -r '.text')
 
         local output_meta
-        output_meta=$(jq -n \
-            --arg truncated "$output_trunc" \
-            --argjson orig_len "$output_orig" \
-            --argjson kept_len "$output_kept" \
-            --arg sha "$output_sha" \
-            '{truncated: ($truncated == "true"), orig_len: $orig_len, kept_len: $kept_len, sha256: $sha}')
+        output_meta=$(echo "$output_result" | jq '{truncated, orig_len, kept_len, sha256}')
 
         local tool_event
         tool_event=$(jq -n \
@@ -710,7 +748,9 @@ send_batch() {
         -H "Content-Type: application/json" \
         -d "$batch" \
         "${BASE_URL}/api/public/ingestion" 2>&1) || {
-        debug "Curl failed: $response"
+        # Truncate error message to first 500 chars
+        local error_msg="${response:0:500}"
+        debug "Curl failed: ${error_msg}..."
         return 1
     }
 
@@ -740,21 +780,36 @@ main() {
     debug "Hook payload: $payload"
 
     # Extract session and transcript
-    local session_id transcript_path
-    read -r session_id < <(extract_session_and_transcript "$payload" | head -n 1)
-    read -r transcript_path < <(extract_session_and_transcript "$payload" | tail -n 1)
+    local session_and_transcript
+    session_and_transcript=$(extract_session_and_transcript "$payload")
+
+    local session_id
+    session_id=$(echo "$session_and_transcript" | head -n 1)
+
+    local transcript_path
+    transcript_path=$(echo "$session_and_transcript" | tail -n 1)
 
     debug "Session ID: $session_id"
     debug "Transcript: $transcript_path"
 
     # Acquire lock (best effort, fail-open if flock not available)
-    exec 200>"$LOCK_FILE" 2>/dev/null || true
-    if command -v flock &>/dev/null; then
-        if ! flock -w 2 200 2>/dev/null; then
-            debug "Failed to acquire lock, proceeding without it"
+    mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
+    local lock_fd=200
+    local lock_acquired=false
+
+    if exec 200>"$LOCK_FILE" 2>/dev/null; then
+        if command -v flock &>/dev/null; then
+            if flock -w 2 200 2>/dev/null; then
+                lock_acquired=true
+                debug "Lock acquired on fd $lock_fd"
+            else
+                debug "Failed to acquire lock, proceeding without it"
+            fi
+        else
+            debug "flock not available, proceeding without file locking"
         fi
     else
-        debug "flock not available, proceeding without file locking"
+        debug "Failed to open lock file, proceeding without lock"
     fi
 
     # Load state
@@ -840,8 +895,9 @@ main() {
     debug "State saved: offset=$new_offset, turn_count=$new_turn_count"
 
     # Release lock
-    if command -v flock &>/dev/null; then
+    if [[ "$lock_acquired" == "true" ]] && command -v flock &>/dev/null; then
         flock -u 200 2>/dev/null || true
+        debug "Lock released"
     fi
 
     info "Processed $turns_count turns for session $session_id"
