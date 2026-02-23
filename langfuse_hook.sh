@@ -555,8 +555,8 @@ build_turn_events() {
                 id: $trace_id,
                 timestamp: $timestamp,
                 name: $name,
-                session_id: $session_id,
-                user_id: $user_id,
+                sessionId: $session_id,
+                userId: $user_id,
                 input: $user_text,
                 output: $assistant_text,
                 tags: ["claude-code"],
@@ -595,11 +595,11 @@ build_turn_events() {
             timestamp: $timestamp,
             body: {
                 id: $id,
-                trace_id: $trace_id,
+                traceId: $trace_id,
                 type: "span",
                 name: $name,
-                start_time: $timestamp,
-                end_time: $timestamp,
+                startTime: $timestamp,
+                endTime: $timestamp,
                 input: {role: "user", content: $user_text},
                 output: {role: "assistant", content: $assistant_text},
                 metadata: $metadata
@@ -623,12 +623,12 @@ build_turn_events() {
             timestamp: $timestamp,
             body: {
                 id: $id,
-                trace_id: $trace_id,
+                traceId: $trace_id,
                 type: "generation",
                 name: "Claude Response",
                 model: $model,
-                start_time: $timestamp,
-                end_time: $timestamp,
+                startTime: $timestamp,
+                endTime: $timestamp,
                 input: {role: "user", content: $user_text},
                 output: {role: "assistant", content: $assistant_text},
                 metadata: {
@@ -711,11 +711,11 @@ build_turn_events() {
                 timestamp: $timestamp,
                 body: {
                     id: $id,
-                    trace_id: $trace_id,
+                    traceId: $trace_id,
                     type: "tool",
                     name: $name,
-                    start_time: $timestamp,
-                    end_time: $timestamp,
+                    startTime: $timestamp,
+                    endTime: $timestamp,
                     input: $input,
                     output: $output,
                     metadata: {
@@ -770,7 +770,7 @@ send_batch() {
     body=$(echo "$response" | sed '$d')
 
     if [[ "$http_code" =~ ^(200|207)$ ]]; then
-        debug "Batch sent successfully: HTTP $http_code"
+        debug "Batch sent successfully: HTTP $http_code, body: $body"
         return 0
     else
         debug "Batch send failed: HTTP $http_code, body: $body"
