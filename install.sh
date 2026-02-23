@@ -5,7 +5,7 @@ REPO_RAW="https://raw.githubusercontent.com/douinc/langfuse-claudecode/main"
 
 # Global install location
 GLOBAL_HOOK_DIR="${HOME}/.claude/hooks/langfuse-claudecode"
-GLOBAL_HOOK_PATH="${GLOBAL_HOOK_DIR}/langfuse_hook.py"
+GLOBAL_HOOK_PATH="${GLOBAL_HOOK_DIR}/langfuse_hook.sh"
 GLOBAL_SETTINGS="${HOME}/.claude/settings.json"
 
 # Project-level (credentials only)
@@ -13,7 +13,7 @@ SETTINGS_LOCAL_FILE=".claude/settings.local.json"
 GITIGNORE_FILE=".gitignore"
 
 # Hook command uses fully-expanded $HOME (no tilde in JSON)
-HOOK_COMMAND="uv run --project ${GLOBAL_HOOK_DIR} ${GLOBAL_HOOK_PATH}"
+HOOK_COMMAND="${GLOBAL_HOOK_PATH}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,12 +38,119 @@ done
 
 # ── Preflight ─────────────────────────────────────────────────────────
 
-if ! command -v uv &> /dev/null; then
-    err "Error: 'uv' is not installed."
-    echo "Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh"
-    exit 1
+# Check and auto-install jq if missing
+if ! command -v jq &> /dev/null; then
+    warn "jq is not installed. Attempting to install..."
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        if command -v brew &> /dev/null; then
+            info "Installing jq via Homebrew..."
+            brew install jq || {
+                err "Failed to install jq via brew. Please install manually:"
+                echo "  brew install jq"
+                exit 1
+            }
+        else
+            err "Homebrew not found. Please install jq manually:"
+            echo "  brew install jq"
+            echo "Or install Homebrew first: https://brew.sh"
+            exit 1
+        fi
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Linux
+        if command -v apt-get &> /dev/null; then
+            info "Installing jq via apt-get..."
+            sudo apt-get update && sudo apt-get install -y jq || {
+                err "Failed to install jq via apt-get. Please install manually:"
+                echo "  sudo apt-get install jq"
+                exit 1
+            }
+        elif command -v yum &> /dev/null; then
+            info "Installing jq via yum..."
+            sudo yum install -y jq || {
+                err "Failed to install jq via yum. Please install manually:"
+                echo "  sudo yum install jq"
+                exit 1
+            }
+        elif command -v dnf &> /dev/null; then
+            info "Installing jq via dnf..."
+            sudo dnf install -y jq || {
+                err "Failed to install jq via dnf. Please install manually:"
+                echo "  sudo dnf install jq"
+                exit 1
+            }
+        else
+            err "No package manager found. Please install jq manually:"
+            echo "  https://jqlang.github.io/jq/download/"
+            exit 1
+        fi
+    else
+        err "Unsupported OS. Please install jq manually:"
+        echo "  https://jqlang.github.io/jq/download/"
+        exit 1
+    fi
+
+    # Verify installation
+    if ! command -v jq &> /dev/null; then
+        err "jq installation failed. Please install manually and try again."
+        exit 1
+    fi
+
+    ok "jq installed successfully"
 fi
 
+# Check and auto-install curl if missing
+if ! command -v curl &> /dev/null; then
+    warn "curl is not installed. Attempting to install..."
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS (curl is usually pre-installed)
+        err "curl not found. This is unusual on macOS. Please install via:"
+        echo "  brew install curl"
+        exit 1
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Linux
+        if command -v apt-get &> /dev/null; then
+            info "Installing curl via apt-get..."
+            sudo apt-get update && sudo apt-get install -y curl || {
+                err "Failed to install curl via apt-get. Please install manually:"
+                echo "  sudo apt-get install curl"
+                exit 1
+            }
+        elif command -v yum &> /dev/null; then
+            info "Installing curl via yum..."
+            sudo yum install -y curl || {
+                err "Failed to install curl via yum. Please install manually:"
+                echo "  sudo yum install curl"
+                exit 1
+            }
+        elif command -v dnf &> /dev/null; then
+            info "Installing curl via dnf..."
+            sudo dnf install -y curl || {
+                err "Failed to install curl via dnf. Please install manually:"
+                echo "  sudo dnf install curl"
+                exit 1
+            }
+        else
+            err "No package manager found. Please install curl manually."
+            exit 1
+        fi
+    else
+        err "Unsupported OS. Please install curl manually."
+        exit 1
+    fi
+
+    # Verify installation
+    if ! command -v curl &> /dev/null; then
+        err "curl installation failed. Please install manually and try again."
+        exit 1
+    fi
+
+    ok "curl installed successfully"
+fi
+
+# Set download function (prefer curl, fallback to wget)
 if command -v curl &> /dev/null; then
     download() { curl -fsSL "$1"; }
 elif command -v wget &> /dev/null; then
@@ -84,23 +191,12 @@ fi
 # ── Download hook files to global location (skip if --setup) ──────────
 
 if [ "$SETUP_ONLY" = false ]; then
-    info "Downloading hook files to ${GLOBAL_HOOK_DIR} ..."
+    info "Downloading hook script to ${GLOBAL_HOOK_DIR} ..."
     mkdir -p "${GLOBAL_HOOK_DIR}"
 
-    download "${REPO_RAW}/langfuse_hook.py" > "${GLOBAL_HOOK_PATH}"
+    download "${REPO_RAW}/langfuse_hook.sh" > "${GLOBAL_HOOK_PATH}"
     chmod +x "${GLOBAL_HOOK_PATH}"
-    ok "  -> langfuse_hook.py"
-
-    download "${REPO_RAW}/pyproject.toml" > "${GLOBAL_HOOK_DIR}/pyproject.toml"
-    ok "  -> pyproject.toml"
-
-    download "${REPO_RAW}/uv.lock" > "${GLOBAL_HOOK_DIR}/uv.lock"
-    ok "  -> uv.lock"
-
-    echo ""
-    info "Installing dependencies (uv sync) ..."
-    uv sync --project "${GLOBAL_HOOK_DIR}" --python 3.13
-    ok "  -> .venv ready"
+    ok "  -> langfuse_hook.sh"
 fi
 
 # ── Register hook in ~/.claude/settings.json (skip if --setup) ────────
@@ -111,39 +207,45 @@ if [ "$SETUP_ONLY" = false ]; then
 
     mkdir -p "$(dirname "${GLOBAL_SETTINGS}")"
 
-    uv run --no-project --python 3.13 - "${GLOBAL_SETTINGS}" "${HOOK_COMMAND}" << 'PYEOF'
-import json, sys, os
+    # Load or create settings
+    if [ -f "${GLOBAL_SETTINGS}" ]; then
+        SETTINGS=$(cat "${GLOBAL_SETTINGS}")
+    else
+        SETTINGS='{}'
+    fi
 
-file_path = sys.argv[1]
-hook_command = sys.argv[2]
+    # Check if langfuse hook already exists
+    EXISTING_HOOK=$(echo "$SETTINGS" | jq -r '
+        [.hooks.Stop[]?.hooks[]? | select(.command | contains("langfuse_hook"))] | length
+    ' 2>/dev/null || echo "0")
 
-if os.path.exists(file_path):
-    with open(file_path, "r") as f:
-        settings = json.load(f)
-else:
-    settings = {}
+    if [ "$EXISTING_HOOK" -gt 0 ]; then
+        # Update existing hook command
+        SETTINGS=$(echo "$SETTINGS" | jq --arg cmd "$HOOK_COMMAND" '
+            .hooks.Stop |= map(
+                .hooks |= map(
+                    if .command | contains("langfuse_hook") then
+                        .command = $cmd
+                    else
+                        .
+                    end
+                )
+            )
+        ')
+    else
+        # Add new hook entry
+        SETTINGS=$(echo "$SETTINGS" | jq --arg cmd "$HOOK_COMMAND" '
+            .hooks.Stop += [{
+                hooks: [{
+                    type: "command",
+                    command: $cmd
+                }]
+            }]
+        ')
+    fi
 
-settings.setdefault("hooks", {})
-settings["hooks"].setdefault("Stop", [])
-
-new_entry = {"hooks": [{"type": "command", "command": hook_command}]}
-
-# Check for existing langfuse hook to avoid duplicates
-found = False
-for group in settings["hooks"]["Stop"]:
-    for h in group.get("hooks", []):
-        if "langfuse_hook" in h.get("command", ""):
-            h["command"] = hook_command
-            found = True
-            break
-
-if not found:
-    settings["hooks"]["Stop"].append(new_entry)
-
-with open(file_path, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-PYEOF
+    # Save settings
+    echo "$SETTINGS" | jq '.' > "${GLOBAL_SETTINGS}"
 
     ok "  -> Stop hook registered (user-wide)"
 fi
@@ -161,41 +263,28 @@ if [ "$SETUP_ONLY" = false ] && [ -f ".claude/hooks/langfuse_hook.py" ]; then
 
     # Remove langfuse hook entry from project-level .claude/settings.json
     if [ -f ".claude/settings.json" ]; then
-        uv run --no-project --python 3.13 - ".claude/settings.json" << 'PYEOF'
-import json, sys, os
+        PROJECT_SETTINGS=$(cat ".claude/settings.json")
 
-file_path = sys.argv[1]
+        # Filter out langfuse_hook entries
+        PROJECT_SETTINGS=$(echo "$PROJECT_SETTINGS" | jq '
+            .hooks.Stop = [
+                .hooks.Stop[]? |
+                .hooks = [.hooks[]? | select(.command | contains("langfuse_hook") | not)] |
+                select(.hooks | length > 0)
+            ] |
+            if .hooks.Stop | length == 0 then
+                del(.hooks.Stop)
+            else
+                .
+            end |
+            if .hooks == {} then
+                del(.hooks)
+            else
+                .
+            end
+        ')
 
-if not os.path.exists(file_path):
-    sys.exit(0)
-
-with open(file_path, "r") as f:
-    settings = json.load(f)
-
-hooks = settings.get("hooks", {})
-stop_list = hooks.get("Stop", [])
-
-# Filter out groups containing langfuse_hook
-new_stop = []
-for group in stop_list:
-    new_hooks = [h for h in group.get("hooks", []) if "langfuse_hook" not in h.get("command", "")]
-    if new_hooks:
-        group["hooks"] = new_hooks
-        new_stop.append(group)
-
-if new_stop:
-    hooks["Stop"] = new_stop
-elif "Stop" in hooks:
-    del hooks["Stop"]
-
-# Clean up empty hooks dict
-if not hooks:
-    settings.pop("hooks", None)
-
-with open(file_path, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-PYEOF
+        echo "$PROJECT_SETTINGS" | jq '.' > ".claude/settings.json"
         ok "  -> Cleaned langfuse hook from project .claude/settings.json"
     fi
 fi
@@ -243,40 +332,39 @@ if [ "$SETUP_ONLY" = true ] || [ "$IN_PROJECT" = true ]; then
     info "Configuring ${SETTINGS_LOCAL_FILE} ..."
     mkdir -p "$(dirname "${SETTINGS_LOCAL_FILE}")"
 
-    _INSTALL_USER_ID="${CC_LANGFUSE_USER_ID:-}" \
-    _INSTALL_ENVIRONMENT="${CC_LANGFUSE_ENVIRONMENT:-}" \
-    _INSTALL_PUBLIC_KEY="${LANGFUSE_PUBLIC_KEY}" \
-    _INSTALL_SECRET_KEY="${LANGFUSE_SECRET_KEY}" \
-    _INSTALL_BASE_URL="${LANGFUSE_BASE_URL}" \
-    uv run --no-project --python 3.13 - "${SETTINGS_LOCAL_FILE}" << 'PYEOF'
-import json, sys, os
+    # Load or create settings.local.json
+    if [ -f "${SETTINGS_LOCAL_FILE}" ]; then
+        LOCAL_SETTINGS=$(cat "${SETTINGS_LOCAL_FILE}")
+    else
+        LOCAL_SETTINGS='{}'
+    fi
 
-file_path = sys.argv[1]
+    # Build env object
+    LOCAL_SETTINGS=$(echo "$LOCAL_SETTINGS" | jq \
+        --arg pk "$LANGFUSE_PUBLIC_KEY" \
+        --arg sk "$LANGFUSE_SECRET_KEY" \
+        --arg url "$LANGFUSE_BASE_URL" \
+        --arg uid "${CC_LANGFUSE_USER_ID:-}" \
+        --arg env "${CC_LANGFUSE_ENVIRONMENT:-}" \
+        '
+        .env.TRACE_TO_LANGFUSE = "true" |
+        .env.LANGFUSE_PUBLIC_KEY = $pk |
+        .env.LANGFUSE_SECRET_KEY = $sk |
+        .env.LANGFUSE_BASE_URL = $url |
+        if $uid != "" then
+            .env.CC_LANGFUSE_USER_ID = $uid
+        else
+            .
+        end |
+        if $env != "" then
+            .env.CC_LANGFUSE_ENVIRONMENT = $env
+        else
+            .
+        end
+    ')
 
-if os.path.exists(file_path):
-    with open(file_path, "r") as f:
-        settings = json.load(f)
-else:
-    settings = {}
-
-settings.setdefault("env", {})
-
-settings["env"]["TRACE_TO_LANGFUSE"] = "true"
-settings["env"]["LANGFUSE_PUBLIC_KEY"] = os.environ["_INSTALL_PUBLIC_KEY"]
-settings["env"]["LANGFUSE_SECRET_KEY"] = os.environ["_INSTALL_SECRET_KEY"]
-settings["env"]["LANGFUSE_BASE_URL"] = os.environ["_INSTALL_BASE_URL"]
-
-user_id = os.environ.get("_INSTALL_USER_ID", "")
-environment = os.environ.get("_INSTALL_ENVIRONMENT", "")
-if user_id:
-    settings["env"]["CC_LANGFUSE_USER_ID"] = user_id
-if environment:
-    settings["env"]["CC_LANGFUSE_ENVIRONMENT"] = environment
-
-with open(file_path, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-PYEOF
+    # Save settings
+    echo "$LOCAL_SETTINGS" | jq '.' > "${SETTINGS_LOCAL_FILE}"
 
     ok "  -> Credentials saved"
 
@@ -322,5 +410,5 @@ echo ""
 echo "Troubleshooting:"
 echo "  - Logs:  tail -f ~/.claude/state/langfuse_hook.log"
 echo "  - Debug: add \"CC_LANGFUSE_DEBUG\": \"true\" to ${SETTINGS_LOCAL_FILE}"
-echo "  - Test:  echo '{}' | uv run --project ${GLOBAL_HOOK_DIR} ${GLOBAL_HOOK_PATH}"
+echo "  - Test:  echo '{}' | ${GLOBAL_HOOK_PATH}"
 echo ""
