@@ -324,9 +324,12 @@ read_incremental() {
         fi
     fi
 
-    # Calculate new offset
+    # Calculate new offset (byte-based for correct multi-byte character handling)
+    local content_bytes new_buffer_bytes
+    content_bytes=$(printf '%s' "$content" | wc -c | tr -d ' ')
+    new_buffer_bytes=$(printf '%s' "$new_buffer" | wc -c | tr -d ' ')
     local new_offset
-    new_offset=$((offset + ${#content} - ${#new_buffer}))
+    new_offset=$((offset + content_bytes - new_buffer_bytes))
 
     echo "$new_offset"
     echo "$new_buffer"
@@ -448,6 +451,7 @@ build_turn_events() {
     local turn_number="$4"
     local transcript_path="$5"
     local host_meta="$6"
+    local environment="${7:-}"
 
     local trace_id
     trace_id=$(generate_uuid)
@@ -539,6 +543,9 @@ build_turn_events() {
         --arg name "Claude Code - Turn $turn_number" \
         --arg session_id "$session_id" \
         --arg user_id "$user_id" \
+        --arg user_text "$user_text_truncated" \
+        --arg assistant_text "$assistant_text_truncated" \
+        --arg environment "$environment" \
         --argjson host_meta "$host_meta" \
         '{
             id: $id,
@@ -550,9 +557,12 @@ build_turn_events() {
                 name: $name,
                 session_id: $session_id,
                 user_id: $user_id,
+                input: $user_text,
+                output: $assistant_text,
                 tags: ["claude-code"],
                 metadata: $host_meta
             }
+            | if $environment != "" then .environment = $environment else . end
         }')
 
     # Build span event
@@ -739,7 +749,7 @@ send_batch() {
     batch=$(jq -n --argjson events "$events" '{batch: $events}')
 
     local auth_header
-    auth_header=$(echo -n "${LANGFUSE_PUBLIC_KEY}:${LANGFUSE_SECRET_KEY}" | base64)
+    auth_header=$(echo -n "${LANGFUSE_PUBLIC_KEY}:${LANGFUSE_SECRET_KEY}" | base64 | tr -d '\n')
 
     local response
     response=$(curl -s -w "\n%{http_code}" \
@@ -869,7 +879,7 @@ main() {
 
         # Build events
         local events
-        events=$(build_turn_events "$turn" "$session_id" "${CC_LANGFUSE_USER_ID:-}" "$turn_number" "$transcript_path" "$host_meta") || {
+        events=$(build_turn_events "$turn" "$session_id" "${CC_LANGFUSE_USER_ID:-}" "$turn_number" "$transcript_path" "$host_meta" "${CC_LANGFUSE_ENVIRONMENT:-}") || {
             error "Failed to build events for turn $turn_number"
             i=$((i + 1))
             continue
